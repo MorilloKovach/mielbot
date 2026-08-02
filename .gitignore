@@ -1,0 +1,24 @@
+# Dependencias
+node_modules/
+
+# Archivos de entorno y credenciales (¡MUY IMPORTANTE NO SUBIRLOS!)
+.env
+*.env
+.env.*
+
+# Base de datos local (evitar subir tu historial personal)
+database.json
+
+# Archivos temporales y de depuración
+screenshots/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+
+# Configuraciones del editor
+.vscode/
+.idea/
