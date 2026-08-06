@@ -123,7 +123,7 @@ export async function checkMielUpdates(credentials, headless = true) {
           // Identificar el tipo de sección por la URL
           let tipo = null;
           if (href.includes('/mensajeria/')) tipo = 'mensajeria';
-          else if (href.includes('/foro/')) tipo = 'foro';
+          else if (href.includes('/foro')) tipo = 'foro';
           else if (href.includes('/contenido/') || href.includes('/material/')) tipo = 'contenido';
           else if (href.includes('/evaluacion/')) tipo = 'evaluacion';
           else if (href.includes('/portafolio/') || href.includes('/trabajo/')) tipo = 'portafolio';
