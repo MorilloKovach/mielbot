@@ -95,7 +95,7 @@ export async function checkMielUpdates(credentials, headless = true) {
       console.log('Advertencia: No se encontraron bloques de materias (.materia-bloque). Procediendo...');
     });
 
-    // Extraer las materias y sus links de mensajería desde el dashboard
+    // Extraer las materias y sus secciones con notificaciones desde el dashboard
     const materias = await page.evaluate(() => {
       const bloques = Array.from(document.querySelectorAll('.materia-bloque'));
       return bloques.map(bloque => {
@@ -104,7 +104,6 @@ export async function checkMielUpdates(credentials, headless = true) {
         
         let nombre = tituloEl ? tituloEl.textContent.trim() : 'Materia sin nombre';
         if (detalleEl) {
-          // Limpiar detalles como "Alumno/a" o espacios extras
           const detalles = detalleEl.textContent.trim()
             .replace(/\s+/g, ' ')
             .replace(' - Alumno/a', '')
@@ -114,91 +113,146 @@ export async function checkMielUpdates(credentials, headless = true) {
           }
         }
 
-        const mensajesLink = bloque.querySelector('a[href*="/mensajeria/entrada/comision/"]');
-        return {
-          name: nombre,
-          url: mensajesLink ? mensajesLink.href : null
-        };
-      }).filter(m => m.url !== null);
-    });
+        // Buscar todos los enlaces dentro del bloque de la materia
+        const enlaces = Array.from(bloque.querySelectorAll('a[href]'));
+        const secciones = [];
 
-    console.log(`Se encontraron ${materias.length} materias con mensajería activa en tu portfolio.`);
+        enlaces.forEach(enlace => {
+          const href = enlace.href.toLowerCase();
+          
+          // Identificar el tipo de sección por la URL
+          let tipo = null;
+          if (href.includes('/mensajeria/')) tipo = 'mensajeria';
+          else if (href.includes('/foro/')) tipo = 'foro';
+          else if (href.includes('/contenido/') || href.includes('/material/')) tipo = 'contenido';
+          else if (href.includes('/evaluacion/')) tipo = 'evaluacion';
+          else if (href.includes('/portafolio/') || href.includes('/trabajo/')) tipo = 'portafolio';
 
-    // Recorrer cada materia para revisar novedades
-    for (const materia of materias) {
-      console.log(`Revisando mensajes de: ${materia.name}...`);
-      try {
-        // Navegar directamente a la mensajería de la materia
-        await page.goto(materia.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        
-        // Extraer ID de la comisión desde la URL
-        const comisionIdMatch = materia.url.match(/comision\/(\d+)/);
-        const comisionId = comisionIdMatch ? comisionIdMatch[1] : 'unknown';
-
-        // Buscar mensajes no leídos
-        const messages = await page.evaluate((cId) => {
-          const rows = Array.from(document.querySelectorAll('table tbody tr, ul li.mensaje, .mensaje-item'));
-          const unread = [];
-
-          rows.forEach((row, index) => {
-            // Buscar indicador de no leído (clase 'mensaje-no-leido', icono 'markunread', data-estado="0" o texto en negrita)
-            const isUnreadClass = row.classList.contains('mensaje-no-leido');
+          if (tipo) {
+            // Verificar si hay una notificación (badge rojo, número > 0, clase 'notificacion', etc.)
+            // Revisamos el enlace mismo, y sus contenedores cercanos
+            const badge = enlace.querySelector('.w3-badge, .badge, .notificacion, .w3-red, [style*="color: red"]') ||
+                          (enlace.parentElement && enlace.parentElement.querySelector('.w3-badge, .badge, .notificacion, .w3-red'));
             
-            const mailIcon = row.querySelector('.material-icons');
-            const isUnreadIcon = mailIcon && (
-              mailIcon.textContent.trim() === 'mail' || 
-              mailIcon.textContent.trim() === 'email' || 
-              mailIcon.textContent.trim() === 'markunread'
-            );
-            
-            const botonLeido = row.querySelector('.botonLeido');
-            const isUnreadState = botonLeido && botonLeido.getAttribute('data-estado') === '0';
-            
-            const isBold = row.querySelector('strong, .w3-bold') !== null || 
-                           window.getComputedStyle(row).fontWeight === 'bold' || 
-                           window.getComputedStyle(row).fontWeight === '700';
-
-            if (isUnreadClass || isUnreadIcon || isUnreadState || isBold) {
-              const cells = Array.from(row.querySelectorAll('td'));
-              const fecha = cells[0] ? cells[0].textContent.trim().replace(/\s+/g, ' ') : 'Reciente';
-              const remitente = cells[1] ? cells[1].textContent.trim().replace(/\s+/g, ' ') : 'Docente/Sistema';
-              const asunto = cells[3] ? cells[3].textContent.trim().replace(/\s+/g, ' ') : 'Sin asunto';
-              
-              const msgId = `${cId}_msg_${index}_${remitente.substring(0, 5)}_${fecha.replace(/\//g, '-')}`;
-
-              unread.push({
-                id: msgId,
-                type: 'message',
-                remitente,
-                asunto,
-                fecha
-              });
-            }
-          });
-
-          return unread;
-        }, comisionId);
-
-        if (messages.length > 0) {
-          console.log(`  ¡Encontrados ${messages.length} mensajes no leídos!`);
-          for (const msg of messages) {
-            updates.push({
-              materia: materia.name,
-              ...msg
+            // Ante la duda de si MIeL siempre pone notificaciones visuales, 
+            // agregamos TODAS las secciones para revisarlas a fondo, sin depender de la burbuja.
+            secciones.push({
+              type: tipo,
+              url: enlace.href
             });
+          }
+        });
+
+        // Eliminar secciones duplicadas por tipo (por si hay múltiples links a la misma sección)
+        const uniqueSecciones = [];
+        const seenTypes = new Set();
+        for (const sec of secciones) {
+          if (!seenTypes.has(sec.type)) {
+            seenTypes.add(sec.type);
+            uniqueSecciones.push(sec);
           }
         }
 
-        // --- OPCIONAL: Verificar Foro o Novedades ---
-        // Podemos añadir aquí raspado de Foros de forma similar si se desea.
-        
-      } catch (materiaError) {
-        console.error(`Error al revisar la materia ${materia.name}:`, materiaError);
-        // Capturar pantalla para depuración
-        const mScreenshot = path.join(SCREENSHOTS_DIR, `error_${materia.name.replace(/[^a-zA-Z0-9]/g, '_')}.png`);
-        await page.screenshot({ path: mScreenshot }).catch(() => {});
+        return {
+          name: nombre,
+          secciones: uniqueSecciones
+        };
+      }).filter(m => m.secciones.length > 0);
+    });
+
+    let totalNovedades = 0;
+    const allUpdates = [];
+
+    console.log(`Se encontraron novedades en ${materias.length} materias.`);
+
+    // Recorrer cada materia y sus secciones con alertas
+    for (const materia of materias) {
+      for (const seccion of materia.secciones) {
+        console.log(`[${materia.name}] Revisando sección: ${seccion.type}...`);
+        try {
+          await page.goto(seccion.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          
+          const comisionIdMatch = seccion.url.match(/comision\/(\d+)/);
+          const comisionId = comisionIdMatch ? comisionIdMatch[1] : 'unknown';
+
+          // Extraer novedades dependiendo del tipo de sección
+          const novedades = await page.evaluate(({ cId, sType }) => {
+            const rows = Array.from(document.querySelectorAll('table tbody tr, ul li.mensaje, .mensaje-item, .foro-item, .evaluacion-item, .contenido-item'));
+            const unread = [];
+
+            rows.forEach((row, index) => {
+              // Para mensajería, usamos las reglas específicas
+              if (sType === 'mensajeria') {
+                const isUnreadClass = row.classList.contains('mensaje-no-leido');
+                const mailIcon = row.querySelector('.material-icons');
+                const isUnreadIcon = mailIcon && (mailIcon.textContent.trim() === 'mail' || mailIcon.textContent.trim() === 'email' || mailIcon.textContent.trim() === 'markunread');
+                const botonLeido = row.querySelector('.botonLeido');
+                const isUnreadState = botonLeido && botonLeido.getAttribute('data-estado') === '0';
+                const isBold = row.querySelector('strong, .w3-bold') !== null || window.getComputedStyle(row).fontWeight === 'bold' || window.getComputedStyle(row).fontWeight === '700';
+
+                if (isUnreadClass || isUnreadIcon || isUnreadState || isBold) {
+                  const cells = Array.from(row.querySelectorAll('td'));
+                  const fecha = cells[0] ? cells[0].textContent.trim().replace(/\s+/g, ' ') : 'Reciente';
+                  const remitente = cells[1] ? cells[1].textContent.trim().replace(/\s+/g, ' ') : 'Profesor';
+                  const asunto = cells[3] ? cells[3].textContent.trim().replace(/\s+/g, ' ') : 'Sin asunto';
+                  
+                  unread.push({
+                    id: `${cId}_msg_${index}_${remitente.substring(0,5)}_${fecha.replace(/\//g, '-')}`,
+                    type: sType,
+                    remitente,
+                    asunto,
+                    fecha
+                  });
+                }
+              } else {
+                // Para Foros, Contenido, Evaluaciones, Portafolio:
+                // Como ya verificamos en el dashboard que HAY una novedad, extraemos las primeras filas
+                // o las que tengan clase de "nuevo" / negrita.
+                const isNew = row.classList.contains('nuevo') || row.classList.contains('unread') || row.querySelector('.w3-red, .badge, strong, .w3-bold, i.w3-text-red') !== null || index === 0;
+                
+                if (isNew && index < 3) { // Limitamos a 3 para no saturar si extraemos por error
+                  const texts = Array.from(row.querySelectorAll('td, span, div, h2, h3, a'))
+                                     .map(c => c.textContent.trim().replace(/\s+/g, ' '))
+                                     .filter(t => t.length > 3);
+                  
+                  // Intentamos deducir el título y autor/fecha
+                  const asunto = texts[0] || 'Nueva actualización';
+                  const remitente = texts[1] || texts[2] || 'Sistema MIeL';
+                  const fecha = texts.find(t => t.match(/\d{2}\/\d{2}\/\d{2,4}/)) || 'Reciente';
+
+                  unread.push({
+                    id: `${cId}_${sType}_${index}_${asunto.substring(0,8).replace(/\s+/g, '')}`,
+                    type: sType,
+                    remitente,
+                    asunto,
+                    fecha
+                  });
+                }
+              }
+            });
+
+            return unread;
+          }, { cId: comisionId, sType: seccion.type });
+
+          if (novedades.length > 0) {
+            console.log(`  ¡Encontrados ${novedades.length} novedades en ${seccion.type}!`);
+            totalNovedades += novedades.length;
+            
+            novedades.forEach(nov => {
+              allUpdates.push({
+                ...nov,
+                materia: materia.name
+              });
+            });
+          }
+        } catch (err) {
+          console.error(`Error al revisar la sección ${seccion.type} de ${materia.name}:`, err.message);
+        }
       }
     }
+
+    console.log(`Verificación completada. Encontradas: ${totalNovedades} novedades.`);
+    return allUpdates;
 
   } catch (error) {
     console.error('Error durante la ejecución del scraper:', error);
@@ -209,6 +263,4 @@ export async function checkMielUpdates(credentials, headless = true) {
   } finally {
     await browser.close();
   }
-
-  return updates;
 }

@@ -104,16 +104,54 @@ async function performCheck(manualUser = null) {
       if (!hasBeenNotified(update.id)) {
         newUpdatesCount++;
 
+        // Determinar estilo de la alerta según el tipo de novedad
+        let titleIcon = '✉️';
+        let typeName = 'Mensaje';
+        let actionDesc = 'un nuevo mensaje no leído';
+        let fieldNameAutor = '👤 Remitente';
+        let fieldNameDesc = '📝 Asunto';
+
+        switch (update.type) {
+          case 'foro':
+            titleIcon = '💬';
+            typeName = 'Foro';
+            actionDesc = 'una nueva actualización en el foro';
+            fieldNameAutor = '👤 Autor/a';
+            fieldNameDesc = '📝 Tópico';
+            break;
+          case 'contenido':
+            titleIcon = '📚';
+            typeName = 'Contenido';
+            actionDesc = 'un nuevo material/contenido publicado';
+            fieldNameAutor = '📁 Sección';
+            fieldNameDesc = '📝 Archivo/Unidad';
+            break;
+          case 'evaluacion':
+            titleIcon = '📝';
+            typeName = 'Evaluación';
+            actionDesc = 'una nueva evaluación o nota publicada';
+            fieldNameAutor = '👤 Profesor/a';
+            fieldNameDesc = '📝 Título';
+            break;
+          case 'portafolio':
+            titleIcon = '💼';
+            typeName = 'Portafolio';
+            actionDesc = 'un nuevo trabajo práctico en tu portafolio';
+            fieldNameAutor = '👤 Autor/a';
+            fieldNameDesc = '📝 Título';
+            break;
+        }
+
         // Crear una notificación Embed interactiva y elegante
         const embed = {
-          color: 0xffa500, // Color naranja característico o azul
-          title: `✉️ Nuevo Mensaje en ${update.materia}`,
+          color: 0xffa500, // Color naranja característico
+          title: `${titleIcon} Nuevo ${typeName} en ${update.materia}`,
           url: 'https://miel.unlam.edu.ar',
-          description: `Has recibido un nuevo mensaje no leído en la plataforma MIeL.`,
+          description: `Tienes ${actionDesc} en la plataforma MIeL.`,
           fields: [
-            { name: '👤 Remitente', value: update.remitente, inline: true },
+            { name: fieldNameAutor, value: update.remitente, inline: true },
             { name: '📅 Fecha', value: update.fecha, inline: true },
-            { name: '📝 Asunto', value: update.asunto }
+            { name: fieldNameDesc, value: update.asunto }
           ],
           footer: {
             text: 'MIeL Notificador'
@@ -220,7 +258,7 @@ client.on('interactionCreate', async interaction => {
         consecutiveFailures = 0;
 
         if (updates.length === 0) {
-          await interaction.editReply('🔍 **Comprobación finalizada:** No tienes mensajes nuevos sin leer en ninguna materia de MIeL.').catch(() => {});
+          await interaction.editReply('🔍 **Comprobación finalizada:** No tienes novedades nuevas sin leer en ninguna materia de MIeL.').catch(() => {});
           return;
         }
 
@@ -229,16 +267,16 @@ client.on('interactionCreate', async interaction => {
 
         const embed = {
           color: 0xffa500,
-          title: `📥 Mensajes sin leer en MIeL (${updates.length})`,
+          title: `📥 Novedades sin leer en MIeL (${updates.length})`,
           url: 'https://miel.unlam.edu.ar',
-          description: 'Se han encontrado los siguientes mensajes no leídos en tu casilla:',
+          description: 'Se han encontrado las siguientes novedades en tu perfil:',
           fields: visibleUpdates.map(u => ({
-            name: `📚 ${u.materia}`,
-            value: `👤 **Remitente:** ${u.remitente}\n📝 **Asunto:** ${u.asunto}\n📅 **Fecha:** ${u.fecha}`,
+            name: `📚 ${u.materia} (${u.type.toUpperCase()})`,
+            value: `👤 **De:** ${u.remitente}\n📝 **Detalle:** ${u.asunto}\n📅 **Fecha:** ${u.fecha}`,
             inline: false
           })),
           footer: {
-            text: updates.length > 10 ? `Mostrando 10 de ${updates.length} mensajes. Revisa la plataforma.` : 'MIeL Notificador'
+            text: updates.length > 10 ? `Mostrando 10 de ${updates.length} novedades. Revisa la plataforma.` : 'MIeL Notificador'
           },
           timestamp: new Date().toISOString()
         };
