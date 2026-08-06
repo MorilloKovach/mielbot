@@ -221,7 +221,7 @@ export async function checkMielUpdates(credentials, headless = true) {
                   const fecha = texts.find(t => t.match(/\d{2}\/\d{2}\/\d{2,4}/)) || 'Reciente';
 
                   unread.push({
-                    id: `${cId}_${sType}_${index}_${asunto.substring(0,8).replace(/\s+/g, '')}`,
+                    id: `${cId}_${sType}_${index}_${asunto.substring(0,8).replace(/\s+/g, '')}_${fecha.replace(/\//g, '-')}`,
                     type: sType,
                     remitente,
                     asunto,

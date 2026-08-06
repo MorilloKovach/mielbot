@@ -253,9 +253,12 @@ client.on('interactionCreate', async interaction => {
         const credentials = { usuario: MIEL_DNI, clave: MIEL_PASSWORD };
         const headless = PLAYWRIGHT_HEADLESS !== 'false';
 
-        const updates = await checkMielUpdates(credentials, headless);
+        const allUpdates = await checkMielUpdates(credentials, headless);
         lastCheckTime = new Date();
         consecutiveFailures = 0;
+
+        // Filtrar novedades que ya fueron notificadas/leídas por el bot
+        const updates = allUpdates.filter(u => !hasBeenNotified(u.id));
 
         if (updates.length === 0) {
           await interaction.editReply('🔍 **Comprobación finalizada:** No tienes novedades nuevas sin leer en ninguna materia de MIeL.').catch(() => {});
