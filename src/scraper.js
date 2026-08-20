@@ -177,7 +177,7 @@ export async function checkMielUpdates(credentials, headless = true) {
 
           // Extraer novedades dependiendo del tipo de sección
           const novedades = await page.evaluate(({ cId, sType }) => {
-            const rows = Array.from(document.querySelectorAll('table tbody tr, ul li.mensaje, .mensaje-item, .foro-item, .evaluacion-item, .contenido-item'));
+            const rows = Array.from(document.querySelectorAll('table tbody tr, ul li.mensaje, .mensaje-item, .foro-item, .foro-tema, .evaluacion-item, .contenido-item, .w3-row.w3-border-bottom'));
             const unread = [];
 
             rows.forEach((row, index) => {
@@ -197,7 +197,7 @@ export async function checkMielUpdates(credentials, headless = true) {
                   const asunto = cells[3] ? cells[3].textContent.trim().replace(/\s+/g, ' ') : 'Sin asunto';
                   
                   unread.push({
-                    id: `${cId}_msg_${index}_${remitente.substring(0,5)}_${fecha.replace(/\//g, '-')}`,
+                    id: `${cId}_msg_${remitente.substring(0,5)}_${fecha.replace(/\//g, '-').replace(/[^a-zA-Z0-9-]/g, '')}`,
                     type: sType,
                     remitente,
                     asunto,
@@ -221,7 +221,7 @@ export async function checkMielUpdates(credentials, headless = true) {
                   const fecha = texts.find(t => t.match(/\d{2}\/\d{2}\/\d{2,4}/)) || 'Reciente';
 
                   unread.push({
-                    id: `${cId}_${sType}_${index}_${asunto.substring(0,8).replace(/\s+/g, '')}_${fecha.replace(/\//g, '-')}`,
+                    id: `${cId}_${sType}_${asunto.substring(0,8).replace(/\s+/g, '')}_${fecha.replace(/\//g, '-').replace(/[^a-zA-Z0-9-]/g, '')}`,
                     type: sType,
                     remitente,
                     asunto,
