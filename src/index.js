@@ -1,11 +1,27 @@
-import { Client, GatewayIntentBits, Partials, REST, Routes, ActivityType } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  REST,
+  Routes,
+  ActivityType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} from 'discord.js';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import cron from 'node-cron';
 import { checkMielUpdates } from './scraper.js';
-import { hasBeenNotified, markAsNotified, loadDatabase } from './database.js';
+import {
+  hasBeenNotified,
+  markMultipleAsNotified,
+  loadDatabase
+} from './database.js';
 
-// Cargar variables de entorno
-dotenv.config();
+// Cargar variables de entorno (.env con fallback automático a data.env)
+const envPath = fs.existsSync('.env') ? '.env' : (fs.existsSync('data.env') ? 'data.env' : '.env');
+dotenv.config({ path: envPath });
 
 const {
   DISCORD_TOKEN,
@@ -18,7 +34,7 @@ const {
 
 // Validar variables de entorno requeridas
 if (!DISCORD_TOKEN) {
-  console.error('❌ ERROR: DISCORD_TOKEN no está definido en el archivo .env.');
+  console.error('❌ ERROR: DISCORD_TOKEN no está definido en el archivo .env / data.env.');
   process.exit(1);
 }
 
@@ -43,11 +59,15 @@ const client = new Client({
 const commands = [
   {
     name: 'check',
-    description: 'Verifica inmediatamente si hay novedades en MIeL.'
+    description: 'Verifica inmediatamente si hay novedades o pendientes sin leer en MIeL.'
+  },
+  {
+    name: 'materias',
+    description: 'Muestra tus materias activas monitoreadas y si tienen alertas en el tablero de MIeL.'
   },
   {
     name: 'status',
-    description: 'Muestra el estado del bot y cuándo se realizó la última comprobación.'
+    description: 'Muestra el estado del bot, estadísticas de monitoreo y última comprobación.'
   },
   {
     name: 'help',
@@ -58,6 +78,153 @@ const commands = [
 let lastCheckTime = null;
 let isChecking = false;
 let consecutiveFailures = 0;
+
+const TYPE_META = {
+  mensajeria: {
+    icon: '✉️',
+    label: 'Mensaje Privado',
+    color: 0x3498db,
+    buttonLabel: 'Abrir Mensaje en MIeL',
+    authorField: '👤 Remitente',
+    subjectField: '📝 Asunto',
+    dateField: '📅 Fecha'
+  },
+  foro: {
+    icon: '💬',
+    label: 'Foro',
+    color: 0xe67e22,
+    buttonLabel: 'Ver Tópico en MIeL',
+    authorField: '📊 Actividad',
+    subjectField: '📌 Tópico',
+    dateField: '🕒 Último mensaje'
+  },
+  contenido: {
+    icon: '📚',
+    label: 'Contenido',
+    color: 0x2ecc71,
+    buttonLabel: 'Ver / Descargar Archivo',
+    authorField: '📁 Unidad / Módulo',
+    subjectField: '📄 Archivo / Recurso',
+    dateField: '📅 Fecha de subida'
+  },
+  portafolio: {
+    icon: '💼',
+    label: 'Portafolio',
+    color: 0x9b59b6,
+    buttonLabel: 'Abrir Portafolio en MIeL',
+    authorField: '📊 Estado / Condición',
+    subjectField: '📝 Práctica / TP',
+    dateField: '📅 Fecha'
+  },
+  evaluacion: {
+    icon: '📝',
+    label: 'Evaluación',
+    color: 0xe74c3c,
+    buttonLabel: 'Ver Evaluación en MIeL',
+    authorField: '📊 Estado / Detalle',
+    subjectField: '📌 Evaluación',
+    dateField: '📅 Fecha'
+  },
+  encuesta: {
+    icon: '📋',
+    label: 'Encuesta',
+    color: 0x1abc9c,
+    buttonLabel: 'Abrir Encuesta en MIeL',
+    authorField: '📊 Estado',
+    subjectField: '📌 Encuesta',
+    dateField: '📅 Fecha'
+  },
+  novedad: {
+    icon: '📢',
+    label: 'Novedad UNLaM',
+    color: 0xf1c40f,
+    buttonLabel: 'Ver Novedad en MIeL',
+    authorField: '🏛️ Origen',
+    subjectField: '📌 Título',
+    dateField: '📅 Publicado'
+  }
+};
+
+/**
+ * Construye el Embed y botón interactivo para una notificación individual.
+ */
+function buildNotificationPayload(update) {
+  const meta = TYPE_META[update.type] || TYPE_META.mensajeria;
+  const targetUrl = update.url || 'https://miel.unlam.edu.ar';
+
+  let description = `Se detectó una novedad de **${meta.label}** en **${update.materia}**.`;
+  if (update.type === 'foro' && update.unreadCount > 0) {
+    description = `Tienes **${update.unreadCount} mensaje(s) sin leer** en el foro de **${update.materia}**.`;
+  } else if (update.type === 'mensajeria') {
+    description = `Tienes un **nuevo mensaje sin leer** en la bandeja de entrada de **${update.materia}**.`;
+  } else if (update.type === 'contenido') {
+    description = `Se publicó nuevo material de estudio en **${update.materia}**.`;
+  } else if (update.type === 'portafolio') {
+    description = `Hay una actualización de trabajo práctico en el portafolio de **${update.materia}**.`;
+  }
+
+  const fields = [
+    { name: meta.subjectField, value: `**${update.asunto || 'Sin título'}**`, inline: false },
+    { name: meta.authorField, value: update.remitente || 'MIeL', inline: true },
+    { name: meta.dateField, value: update.fecha || 'Reciente', inline: true }
+  ];
+
+  if (update.detalle) {
+    fields.push({
+      name: 'ℹ️ Detalle adicional',
+      value: update.detalle.slice(0, 1024),
+      inline: false
+    });
+  }
+
+  const embed = {
+    color: meta.color,
+    title: `${meta.icon} ${meta.label} — ${update.materia}`,
+    url: targetUrl,
+    description,
+    fields,
+    footer: {
+      text: 'MIeL Notificador · UNLaM'
+    },
+    timestamp: new Date().toISOString()
+  };
+
+  if (update.thumbnail && update.thumbnail.startsWith('http')) {
+    embed.thumbnail = { url: update.thumbnail };
+  }
+
+  const components = [];
+  if (targetUrl && targetUrl.startsWith('http')) {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel(meta.buttonLabel)
+        .setStyle(ButtonStyle.Link)
+        .setURL(targetUrl)
+    );
+    components.push(row);
+  }
+
+  return { embeds: [embed], components };
+}
+
+/**
+ * Formatea una lista de novedades en campos compactos para el Embed resumen de /check.
+ */
+function buildSummaryFields(updatesList) {
+  return updatesList.slice(0, 10).map(u => {
+    const meta = TYPE_META[u.type] || TYPE_META.mensajeria;
+    const linkPart = u.url ? ` · [Abrir en MIeL](${u.url})` : '';
+    const detailPart = u.detalle ? `\nℹ️ *${u.detalle.slice(0, 140)}${u.detalle.length > 140 ? '...' : ''}*` : '';
+
+    return {
+      name: `${meta.icon} ${u.materia} — ${meta.label.toUpperCase()}`,
+      value:
+        `📌 **${u.asunto}**\n` +
+        `📊 ${u.remitente} · 📅 ${u.fecha}${linkPart}${detailPart}`,
+      inline: false
+    };
+  });
+}
 
 // Registrar comandos slash en Discord
 async function registerCommands() {
@@ -74,12 +241,12 @@ async function registerCommands() {
   }
 }
 
-// Función para realizar la comprobación de MIeL y enviar alertas
+// Función para realizar la comprobación automática de MIeL y enviar alertas por DM
 async function performCheck(manualUser = null) {
   if (isChecking) {
     console.log('Ya se está realizando una comprobación. Omitiendo...');
     if (manualUser) {
-      await manualUser.send('Ya hay una verificación en curso. Por favor, espera un momento.');
+      await manualUser.send('⏳ Ya hay una verificación en curso. Por favor, espera un momento.');
     }
     return;
   }
@@ -95,86 +262,28 @@ async function performCheck(manualUser = null) {
     lastCheckTime = new Date();
     consecutiveFailures = 0;
 
-    console.log(`Verificación completada. Encontradas: ${updates.length} novedades.`);
+    const newUpdates = updates.filter(u => !hasBeenNotified(u.id));
+    console.log(`Verificación completada. Total activas: ${updates.length}, Nuevas sin notificar: ${newUpdates.length}.`);
 
-    let newUpdatesCount = 0;
-    const notifiedUser = manualUser || (await client.users.fetch(DISCORD_USER_ID).catch(() => null));
+    const notifiedUser = manualUser || (DISCORD_USER_ID ? await client.users.fetch(DISCORD_USER_ID).catch(() => null) : null);
 
-    for (const update of updates) {
-      if (!hasBeenNotified(update.id)) {
-        newUpdatesCount++;
-
-        // Determinar estilo de la alerta según el tipo de novedad
-        let titleIcon = '✉️';
-        let typeName = 'Mensaje';
-        let actionDesc = 'un nuevo mensaje no leído';
-        let fieldNameAutor = '👤 Remitente';
-        let fieldNameDesc = '📝 Asunto';
-
-        switch (update.type) {
-          case 'foro':
-            titleIcon = '💬';
-            typeName = 'Foro';
-            actionDesc = 'una nueva actualización en el foro';
-            fieldNameAutor = '👤 Autor/a';
-            fieldNameDesc = '📝 Tópico';
-            break;
-          case 'contenido':
-            titleIcon = '📚';
-            typeName = 'Contenido';
-            actionDesc = 'un nuevo material/contenido publicado';
-            fieldNameAutor = '📁 Sección';
-            fieldNameDesc = '📝 Archivo/Unidad';
-            break;
-          case 'evaluacion':
-            titleIcon = '📝';
-            typeName = 'Evaluación';
-            actionDesc = 'una nueva evaluación o nota publicada';
-            fieldNameAutor = '👤 Profesor/a';
-            fieldNameDesc = '📝 Título';
-            break;
-          case 'portafolio':
-            titleIcon = '💼';
-            typeName = 'Portafolio';
-            actionDesc = 'un nuevo trabajo práctico en tu portafolio';
-            fieldNameAutor = '👤 Autor/a';
-            fieldNameDesc = '📝 Título';
-            break;
-        }
-
-        // Crear una notificación Embed interactiva y elegante
-        const embed = {
-          color: 0xffa500, // Color naranja característico
-          title: `${titleIcon} Nuevo ${typeName} en ${update.materia}`,
-          url: 'https://miel.unlam.edu.ar',
-          description: `Tienes ${actionDesc} en la plataforma MIeL.`,
-          fields: [
-            { name: fieldNameAutor, value: update.remitente, inline: true },
-            { name: '📅 Fecha', value: update.fecha, inline: true },
-            { name: fieldNameDesc, value: update.asunto }
-          ],
-          footer: {
-            text: 'MIeL Notificador'
-          },
-          timestamp: new Date().toISOString()
-        };
-
+    if (newUpdates.length > 0) {
+      for (const update of newUpdates) {
         if (notifiedUser) {
-          await notifiedUser.send({ embeds: [embed] }).catch(err => {
-            console.error(`No se pudo enviar la alerta por DM al usuario:`, err);
+          const payload = buildNotificationPayload(update);
+          await notifiedUser.send(payload).catch(err => {
+            console.error('No se pudo enviar la alerta por DM al usuario:', err.message);
           });
         }
-        
-        // Marcar en la base de datos para no repetir
-        markAsNotified(update.id);
       }
+      markMultipleAsNotified(newUpdates.map(u => u.id));
     }
 
     if (manualUser) {
-      if (newUpdatesCount > 0) {
-        await manualUser.send(`✅ Comprobación manual finalizada. Te he enviado ${newUpdatesCount} alertas de nuevas novedades.`);
+      if (newUpdates.length > 0) {
+        await manualUser.send(`✅ Comprobación finalizada. Te envié **${newUpdates.length}** alerta(s) nueva(s).`);
       } else {
-        await manualUser.send('🔍 Comprobación manual finalizada. No tienes nuevos mensajes sin leer en MIeL.');
+        await manualUser.send('🔍 Comprobación finalizada. No tienes notificaciones nuevas en MIeL.');
       }
     }
 
@@ -182,14 +291,13 @@ async function performCheck(manualUser = null) {
     console.error('Error al comprobar actualizaciones de MIeL:', error);
     consecutiveFailures++;
 
-    // Si hay demasiados errores consecutivos, notificar al usuario
     if (consecutiveFailures >= 3 || manualUser) {
-      const notifiedUser = manualUser || (await client.users.fetch(DISCORD_USER_ID).catch(() => null));
+      const notifiedUser = manualUser || (DISCORD_USER_ID ? await client.users.fetch(DISCORD_USER_ID).catch(() => null) : null);
       if (notifiedUser) {
         await notifiedUser.send(
-          `⚠️ **Alerta del Bot**: Se han producido ${consecutiveFailures} fallos consecutivos al intentar verificar tu cuenta de MIeL.\n` +
+          `⚠️ **Alerta del Bot**: Se han producido ${consecutiveFailures} fallo(s) consecutivo(s) al intentar verificar tu cuenta de MIeL.\n` +
           `**Detalle del error:** \`${error.message}\`\n` +
-          `Por favor, verifica que tu DNI y clave en el archivo \`.env\` sean válidos y que el servidor de MIeL funcione.`
+          `Por favor, verifica que tu DNI y clave sean válidos y que el servidor de MIeL esté operativo.`
         ).catch(() => {});
       }
     }
@@ -201,22 +309,27 @@ async function performCheck(manualUser = null) {
 // Evento Ready
 client.once('ready', async () => {
   console.log(`🤖 Bot conectado como ${client.user.tag}`);
-  
-  // Establecer actividad de estado
+
+  const db = loadDatabase();
+  if (db.lastCheckTime && !lastCheckTime) {
+    lastCheckTime = new Date(db.lastCheckTime);
+  }
+
   client.user.setActivity('novedades de MIeL', { type: ActivityType.Watching });
 
-  // Registrar los comandos slash
   await registerCommands();
 
-  // Enviar mensaje de bienvenida si se configuró el ID del usuario
   if (DISCORD_USER_ID) {
     const owner = await client.users.fetch(DISCORD_USER_ID).catch(() => null);
     if (owner) {
-      await owner.send('👋 ¡Hola! El bot de MIeL se ha iniciado correctamente. Estaré monitoreando novedades según tu programación. Puedes usar `/check` para forzar una comprobación.').catch(() => {});
+      await owner.send(
+        '👋 ¡Hola! El bot de **MIeL Notificador** se ha iniciado correctamente.\n' +
+        '• Monitoreando: **Mensajes, Foros, Contenidos, Portafolio, Evaluaciones, Encuestas y Novedades**.\n' +
+        '• Usa `/check` para revisar ahora mismo o `/materias` para ver tus comisiones activas.'
+      ).catch(() => {});
     }
   }
 
-  // Programar la tarea de cron
   console.log(`⏰ Programando verificación automática con la expresión cron: "${CHECK_INTERVAL_CRON}"`);
   cron.schedule(CHECK_INTERVAL_CRON, () => {
     performCheck().catch(err => console.error('Error en tarea programada:', err));
@@ -229,7 +342,6 @@ client.on('interactionCreate', async interaction => {
 
   const { commandName, user } = interaction;
 
-  // Restringir el bot para que solo responda al usuario dueño si está configurado DISCORD_USER_ID
   if (DISCORD_USER_ID && user.id !== DISCORD_USER_ID) {
     return interaction.reply({ content: '❌ No estás autorizado para usar este bot.', ephemeral: true }).catch(() => {});
   }
@@ -244,7 +356,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferReply();
       } catch (deferError) {
         console.error('Error al diferir respuesta (posible expiración de 3s):', deferError.message);
-        return; // Detener flujo para evitar crash por interaction no válida
+        return;
       }
 
       isChecking = true;
@@ -257,39 +369,73 @@ client.on('interactionCreate', async interaction => {
         lastCheckTime = new Date();
         consecutiveFailures = 0;
 
-        // Filtrar novedades que ya fueron notificadas/leídas por el bot
-        const updates = allUpdates.filter(u => !hasBeenNotified(u.id));
+        const newUpdates = allUpdates.filter(u => !hasBeenNotified(u.id));
+        const pendingUnread = allUpdates.filter(u => hasBeenNotified(u.id) && u.isExplicitUnread);
 
-        if (updates.length === 0) {
-          await interaction.editReply('🔍 **Comprobación finalizada:** No tienes novedades nuevas sin leer en ninguna materia de MIeL.').catch(() => {});
+        // Caso 1: Hay novedades nuevas sin notificar
+        if (newUpdates.length > 0) {
+          const embed = {
+            color: 0xffa500,
+            title: `📥 Nuevas novedades detectadas en MIeL (${newUpdates.length})`,
+            url: 'https://miel.unlam.edu.ar/principal/interno/',
+            description: 'Se encontraron las siguientes actualizaciones nuevas en tus materias:',
+            fields: buildSummaryFields(newUpdates),
+            footer: {
+              text: newUpdates.length > 10
+                ? `Mostrando 10 de ${newUpdates.length} novedades nuevas · MIeL Notificador`
+                : 'MIeL Notificador · UNLaM'
+            },
+            timestamp: new Date().toISOString()
+          };
+
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setLabel('Ir a MIeL')
+              .setStyle(ButtonStyle.Link)
+              .setURL(newUpdates[0].url || 'https://miel.unlam.edu.ar/principal/interno/')
+          );
+
+          await interaction.editReply({
+            content: `✅ **¡Comprobación finalizada!** Se detectaron **${newUpdates.length}** novedad(es) nueva(s):`,
+            embeds: [embed],
+            components: [row]
+          }).catch(() => {});
+
+          markMultipleAsNotified(newUpdates.map(u => u.id));
           return;
         }
 
-        // Limitar a los primeros 10 para no superar los límites de campos de un Embed de Discord (25)
-        const visibleUpdates = updates.slice(0, 10);
+        // Caso 2: No hay novedades nuevas, pero siguen existiendo mensajes o foros con badge rojo sin abrir en MIeL
+        if (pendingUnread.length > 0) {
+          const embed = {
+            color: 0x3498db,
+            title: `🔔 Pendientes sin abrir en MIeL (${pendingUnread.length})`,
+            url: 'https://miel.unlam.edu.ar/principal/interno/',
+            description: 'No hubo publicaciones nuevas desde la última revisión, pero **todavía tienes estos ítems marcados como no leídos** en MIeL:',
+            fields: buildSummaryFields(pendingUnread),
+            footer: {
+              text: 'Cuando los abras en MIeL, dejarán de aparecer como pendientes.'
+            },
+            timestamp: new Date().toISOString()
+          };
 
-        const embed = {
-          color: 0xffa500,
-          title: `📥 Novedades sin leer en MIeL (${updates.length})`,
-          url: 'https://miel.unlam.edu.ar',
-          description: 'Se han encontrado las siguientes novedades en tu perfil:',
-          fields: visibleUpdates.map(u => ({
-            name: `📚 ${u.materia} (${u.type.toUpperCase()})`,
-            value: `👤 **De:** ${u.remitente}\n📝 **Detalle:** ${u.asunto}\n📅 **Fecha:** ${u.fecha}`,
-            inline: false
-          })),
-          footer: {
-            text: updates.length > 10 ? `Mostrando 10 de ${updates.length} novedades. Revisa la plataforma.` : 'MIeL Notificador'
-          },
-          timestamp: new Date().toISOString()
-        };
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setLabel('Abrir pendiente en MIeL')
+              .setStyle(ButtonStyle.Link)
+              .setURL(pendingUnread[0].url || 'https://miel.unlam.edu.ar/principal/interno/')
+          );
 
-        await interaction.editReply({ content: '✅ ¡Comprobación finalizada!', embeds: [embed] }).catch(() => {});
-
-        // Marcar como notificados para evitar spam de la tarea automática en segundo plano
-        for (const update of updates) {
-          markAsNotified(update.id);
+          await interaction.editReply({
+            content: '🔍 **Sin novedades nuevas**, pero tienes pendientes sin leer en la plataforma:',
+            embeds: [embed],
+            components: [row]
+          }).catch(() => {});
+          return;
         }
+
+        // Caso 3: Todo completamente al día
+        await interaction.editReply('✅ **Todo al día:** No tienes notificaciones nuevas ni mensajes/foros pendientes sin leer en ninguna materia de MIeL.').catch(() => {});
 
       } catch (error) {
         console.error('Error en comprobación manual:', error);
@@ -298,34 +444,87 @@ client.on('interactionCreate', async interaction => {
       } finally {
         isChecking = false;
       }
-    } 
-    
+    }
+
+    else if (commandName === 'materias') {
+      const db = loadDatabase();
+      const subjects = db.lastSubjects || [];
+
+      if (subjects.length === 0) {
+        return interaction.reply({
+          content: 'ℹ️ Aún no hay un relevamiento de materias guardado. Ejecuta `/check` para escanear tu cuenta de MIeL.',
+          ephemeral: true
+        }).catch(() => {});
+      }
+
+      const fields = subjects.map(s => {
+        const badgeEntries = Object.entries(s.badges || {});
+        const badgeText = badgeEntries.length > 0
+          ? badgeEntries.map(([sec, count]) => `🔴 **${sec.toUpperCase()}**: ${count} sin leer`).join(' · ')
+          : '🟢 Sin alertas pendientes en el tablero';
+
+        return {
+          name: `📘 ${s.name}`,
+          value: `Comisión ID: \`${s.comisionId}\` · ${badgeText}`,
+          inline: false
+        };
+      });
+
+      const materiasEmbed = {
+        color: 0x2ecc71,
+        title: `🎓 Materias Activas Monitoreadas (${subjects.length})`,
+        url: 'https://miel.unlam.edu.ar/principal/interno/',
+        description: 'Estado de tus comisiones según la última verificación realizada:',
+        fields,
+        footer: {
+          text: db.lastCheckTime
+            ? `Última actualización: ${new Date(db.lastCheckTime).toLocaleString()}`
+            : 'MIeL Notificador'
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      await interaction.reply({ embeds: [materiasEmbed] }).catch(() => {});
+    }
+
     else if (commandName === 'status') {
       const db = loadDatabase();
+      const effectiveLastCheck = lastCheckTime || (db.lastCheckTime ? new Date(db.lastCheckTime) : null);
+
       const statusEmbed = {
         color: 0x00ae86,
         title: '📊 Estado del Bot de MIeL',
         fields: [
-          { name: 'Última Comprobación', value: lastCheckTime ? lastCheckTime.toLocaleString() : 'Nunca', inline: true },
-          { name: 'Historial Notificado', value: `${db.notifiedIds.length} ítems`, inline: true },
-          { name: 'Intervalo de Monitoreo', value: `Cron: \`${CHECK_INTERVAL_CRON}\``, inline: false },
-          { name: 'Fallas Consecutivas', value: `${consecutiveFailures}`, inline: true },
-          { name: 'Estado Actual', value: isChecking ? 'Buscando novedades...' : 'En espera', inline: true }
+          { name: '🕒 Última Comprobación', value: effectiveLastCheck ? effectiveLastCheck.toLocaleString() : 'Nunca', inline: true },
+          { name: '🎓 Materias Monitoreadas', value: `${(db.lastSubjects || []).length} comisiones`, inline: true },
+          { name: '🗂️ Secciones Inicializadas', value: `${(db.seededSections || []).length} secciones`, inline: true },
+          { name: '🔔 Historial Registrado', value: `${db.notifiedIds.length} ítems en memoria`, inline: true },
+          { name: '⚠️ Fallas Consecutivas', value: `${consecutiveFailures}`, inline: true },
+          { name: '⚙️ Estado Actual', value: isChecking ? '🔄 Buscando novedades...' : '✅ En espera', inline: true },
+          { name: '⏰ Intervalo Automático', value: `Cron: \`${CHECK_INTERVAL_CRON}\``, inline: false }
         ],
         timestamp: new Date().toISOString()
       };
       await interaction.reply({ embeds: [statusEmbed] }).catch(() => {});
-    } 
-    
+    }
+
     else if (commandName === 'help') {
       const helpEmbed = {
         color: 0x3498db,
-        title: '❓ Ayuda - MIeL Notificador',
-        description: 'Este bot inicia sesión en tu cuenta de MIeL de manera programada y te notifica por mensaje directo si tienes nuevos mensajes de profesores sin leer.',
+        title: '❓ Ayuda — MIeL Notificador',
+        description:
+          'Este bot inicia sesión en tu cuenta de MIeL de manera programada y monitorea cambios en todas tus materias:\n' +
+          '• ✉️ **Mensajería** (mensajes no leídos y aviso de adjuntos)\n' +
+          '• 💬 **Foros** (conteo exacto de mensajes sin leer y nuevos temas)\n' +
+          '• 📚 **Contenidos** (nuevos apuntes, PDFs o links subidos por la cátedra)\n' +
+          '• 💼 **Portafolio** (nuevos trabajos prácticos, entregas y correcciones/notas)\n' +
+          '• 📝 **Evaluaciones y Encuestas**\n' +
+          '• 📢 **Novedades Institucionales de UNLaM**',
         fields: [
-          { name: '`/check`', value: 'Fuerza una revisión inmediata de tu bandeja de entrada en MIeL.' },
-          { name: '`/status`', value: 'Muestra estadísticas y cuándo fue la última revisión.' },
-          { name: '`/help`', value: 'Muestra este mensaje.' }
+          { name: '`/check`', value: 'Fuerza una revisión inmediata de MIeL. Muestra las novedades nuevas y también te recuerda si dejaste algún mensaje o foro sin abrir.' },
+          { name: '`/materias`', value: 'Lista todas tus materias activas del cuatrimestre y si alguna tiene burbujas rojas de notificación en MIeL.' },
+          { name: '`/status`', value: 'Muestra estadísticas de la base de datos, secciones monitoreadas y última revisión.' },
+          { name: '`/help`', value: 'Muestra este mensaje de ayuda.' }
         ],
         footer: {
           text: 'Desarrollado para UNLaM MIeL'
